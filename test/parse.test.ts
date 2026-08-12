@@ -111,4 +111,53 @@ describe('parse(str)', () => {
     decl = rule.declarations[0];
     expect(decl.parent).toBe(rule);
   });
+
+  it('should keep the , of a nested functional pseudo-class', () => {
+    const css = '.klass:is(:nth-child(1), :nth-child(2)) {margin: 0}';
+    const result = parse(css);
+
+    const rule = result.stylesheet.rules[0] as CssRuleAST;
+    expect(rule.selectors.length).toBe(1);
+    expect(rule.selectors[0]).toBe('.klass:is(:nth-child(1), :nth-child(2))');
+  });
+
+  it('should not hang on a selector with unclosed parentheses', () => {
+    // The '\(.*?\)' alternative rescanned the rest of the selector from every
+    // '(' it found, which is quadratic when the parenthesis is never closed.
+    const unclosed = ':is('.repeat(200000);
+    const start = Date.now();
+
+    const result = parse('.a,' + unclosed + '{color: red}', {silent: true});
+
+    expect(Date.now() - start).toBeLessThan(2000);
+    expect(result.stylesheet.rules.length).toBe(1);
+  });
+
+  it('should not hang on an unterminated @custom-media rule', () => {
+    // '\s*([^{;]+)' let both parts match the trailing whitespace, so a rule
+    // missing its ';' backtracked quadratically.
+    const css = '@custom-media --narrow-window' + ' '.repeat(200000);
+    const start = Date.now();
+
+    parse(css, {silent: true});
+
+    expect(Date.now() - start).toBeLessThan(2000);
+  });
+
+  it('should not overflow the stack on unbalanced parentheses', () => {
+    const unbalanced = '.a,:is(:is(:is(.b) {color: red}';
+
+    expect(() => parse(unbalanced, {silent: true})).not.toThrow();
+  });
+
+  it('should not overflow the stack on deeply nested parentheses', () => {
+    const nested = ':is('.repeat(20000) + ')'.repeat(20000);
+    const start = Date.now();
+
+    expect(() => {
+      parse('.a,' + nested + '{color: red}', {silent: true});
+    }).not.toThrow();
+
+    expect(Date.now() - start).toBeLessThan(2000);
+  });
 });

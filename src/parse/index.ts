@@ -29,6 +29,9 @@ import {
 // New rule => https://www.w3.org/TR/CSS22/syndata.html#comments
 // [^] is equivalent to [.\n\r]
 const commentre = /\/\*[^]*?(?:\*\/|$)/g;
+// Maximum nesting handled when protecting the ',' inside the parentheses of a
+// selector (see findClosingParenthese).
+const maxParenthesesDepth = 100;
 
 export const parse = (
   css: string,
@@ -197,6 +200,46 @@ export const parse = (
     });
   }
 
+  function findClosingParenthese(
+    str: string,
+    start: number,
+    depth: number
+  ): number {
+    // A selector never nests parentheses that deeply, so this only stops a
+    // hostile one from recursing until the stack overflows.
+    if (depth > maxParenthesesDepth) {
+      return -1;
+    }
+    let ptr = start + 1;
+    let found = false;
+    let closeParentheses = str.indexOf(')', ptr);
+    while (!found && closeParentheses !== -1) {
+      const nextParentheses = str.indexOf('(', ptr);
+      if (nextParentheses !== -1 && nextParentheses < closeParentheses) {
+        const nextSearch = findClosingParenthese(
+          str,
+          nextParentheses + 1,
+          depth + 1
+        );
+        if (nextSearch === -1) {
+          // The nested group is never closed, so this one cannot be closed
+          // either. Stopping here avoids restarting the scan from the start
+          // of the string, which would recurse forever.
+          return -1;
+        }
+        ptr = nextSearch + 1;
+        closeParentheses = str.indexOf(')', ptr);
+      } else {
+        found = true;
+      }
+    }
+    if (found && closeParentheses !== -1) {
+      return closeParentheses;
+    } else {
+      return -1;
+    }
+  }
+
   /**
    * Parse selector.
    */
@@ -207,35 +250,54 @@ export const parse = (
     }
 
     // remove comment in selector;
-    const res = trim(m[0]).replace(commentre, '');
+    let res = trim(m[0]).replace(commentre, '');
 
     // Optimisation: If there is no ',' no need to split or post-process (this is less costly)
     if (res.indexOf(',') === -1) {
       return [res];
     }
 
+    // Replace all the , in the parentheses by \u200C
+    let ptr = 0;
+    let startParentheses = res.indexOf('(', ptr);
+    while (startParentheses !== -1) {
+      const closeParentheses = findClosingParenthese(res, startParentheses, 0);
+      if (closeParentheses === -1) {
+        break;
+      }
+      ptr = closeParentheses + 1;
+      res =
+        res.substring(0, startParentheses) +
+        res
+          .substring(startParentheses, closeParentheses)
+          .replace(/,/g, '\u200C') +
+        res.substring(closeParentheses);
+      startParentheses = res.indexOf('(', ptr);
+    }
+
+    // Replace all the , in ' and " by \u200C
+    res = res
+      /**
+       * replace ',' by \u200C for data selector (div[data-lang="fr,de,us"])
+       *
+       * Examples:
+       * div[data-lang="fr,\"de,us"]
+       * div[data-lang='fr,\'de,us']
+       *
+       * Regex logic:
+       *  ("|')(?:\\\1|.)*?\1 => Handle the " and '
+       *
+       * Optimization 1:
+       * No greedy capture (see docs about the difference between .* and .*?)
+       *
+       * Optimization 2:
+       * ("|')(?:\\\1|.)*?\1 this use reference to capture group, it work faster.
+       */
+      .replace(/("|')(?:\\\1|.)*?\1/g, m => m.replace(/,/g, '\u200C'));
+
+    // Split all the left , and replace all the \u200C by ,
     return (
       res
-        /**
-         * replace ',' by \u200C for data selector (div[data-lang="fr,de,us"])
-         * replace ',' by \u200C for nthChild and other selector (div:nth-child(2,3,4))
-         *
-         * Examples:
-         * div[data-lang="fr,\"de,us"]
-         * div[data-lang='fr,\'de,us']
-         * div:matches(.toto, .titi:matches(.toto, .titi))
-         *
-         * Regex logic:
-         *  ("|')(?:\\\1|.)*?\1 => Handle the " and '
-         *  \(.*?\)  => Handle the ()
-         *
-         * Optimization 1:
-         * No greedy capture (see docs about the difference between .* and .*?)
-         *
-         * Optimization 2:
-         * ("|')(?:\\\1|.)*?\1 this use reference to capture group, it work faster.
-         */
-        .replace(/("|')(?:\\\1|.)*?\1|\(.*?\)/g, m => m.replace(/,/g, '\u200C'))
         // Split the selector by ','
         .split(',')
         // Replace back \u200C by ','
@@ -522,7 +584,7 @@ export const parse = (
    */
   function atcustommedia(): CssCustomMediaAST | void {
     const pos = position();
-    const m = match(/^@custom-media\s+(--[^\s]+)\s*([^{;]+);/);
+    const m = match(/^@custom-media\s+(--\S+)\s*([^{;\s][^{;]*);/);
     if (!m) {
       return;
     }

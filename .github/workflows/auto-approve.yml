@@ -1,11 +1,12 @@
 name: Auto approve
 
 on:
-  pull_request
+  workflow_dispatch:
 
 jobs:
   auto-approve:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       pull-requests: write
     steps:
